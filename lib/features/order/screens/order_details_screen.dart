@@ -383,6 +383,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
                                                     fontSize: Dimensions
                                                         .fontSizeDefault)),
                                             onTap: () {
+                                              Provider.of<TrackerProvider>(
+                                                      context,
+                                                      listen: false)
+                                                  .setTrackOrderId(
+                                                      orderModel?.id);
                                               LocationHelper.openMap(
                                                 destinationLatitude:
                                                     double.tryParse(
@@ -989,6 +994,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
                                           btnTxt: getTranslated(
                                               'direction', context),
                                           onTap: () {
+                                            Provider.of<TrackerProvider>(
+                                                    context,
+                                                    listen: false)
+                                                .setTrackOrderId(
+                                                    orderModel?.id);
                                             Geolocator.getCurrentPosition(
                                                     desiredAccuracy:
                                                         LocationAccuracy.high)

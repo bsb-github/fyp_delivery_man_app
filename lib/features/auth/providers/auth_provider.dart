@@ -136,6 +136,10 @@ class AuthProvider with ChangeNotifier {
     return authRepo!.getUserToken();
   }
 
+  String getUserId() {
+    return authRepo!.getUserToken();
+  }
+
   void getBranchList() {
     _branchList = [];
 
