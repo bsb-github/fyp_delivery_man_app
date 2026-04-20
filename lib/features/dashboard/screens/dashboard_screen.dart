@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:developer';
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:disable_battery_optimization/disable_battery_optimization.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -7,15 +11,17 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'package:resturant_delivery_boy/common/providers/tracker_provider.dart';
 import 'package:resturant_delivery_boy/common/widgets/custom_pop_scope_widget.dart';
+import 'package:resturant_delivery_boy/features/home/screens/home_screen.dart';
 import 'package:resturant_delivery_boy/features/home/widgets/location_permission_widget.dart';
+import 'package:resturant_delivery_boy/features/order/domain/models/order_model.dart';
 import 'package:resturant_delivery_boy/features/order/providers/order_provider.dart';
+import 'package:resturant_delivery_boy/features/order/screens/order_details_screen.dart';
+import 'package:resturant_delivery_boy/features/order/screens/order_history_screen.dart';
 import 'package:resturant_delivery_boy/features/profile/providers/profile_provider.dart';
+import 'package:resturant_delivery_boy/features/profile/screens/profile_screen.dart';
 import 'package:resturant_delivery_boy/helper/location_helper.dart';
 import 'package:resturant_delivery_boy/helper/notification_helper.dart';
 import 'package:resturant_delivery_boy/localization/language_constrants.dart';
-import 'package:resturant_delivery_boy/features/home/screens/home_screen.dart';
-import 'package:resturant_delivery_boy/features/order/screens/order_history_screen.dart';
-import 'package:resturant_delivery_boy/features/profile/screens/profile_screen.dart';
 import 'package:resturant_delivery_boy/main.dart';
 import 'package:resturant_delivery_boy/utill/dimensions.dart';
 import 'package:resturant_delivery_boy/utill/styles.dart';
@@ -30,15 +36,12 @@ class DashboardScreen extends StatefulWidget {
   static bool isOverlayEntryAdded = false; // Add this flag
   static bool isOpenSetting = false;
 
-
   static void removeOverlayEntry() {
     if (isOverlayEntryAdded) {
       overlayEntry.remove();
       isOverlayEntryAdded = false; // Update the flag
     }
   }
-
-
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
@@ -46,9 +49,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final PageController _pageController = PageController();
   int _pageIndex = 0;
   late List<Widget> _screens;
+  Timer? _pollingTimer;
+  int? _lastOrderId;
+  final AudioPlayer _audioPlayer = AudioPlayer();
 
   late final AppLifecycleListener _listener;
-
 
   @override
   void initState() {
@@ -62,58 +67,165 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     _listener = AppLifecycleListener(
       onPause: () async {
-        final bool isPositionStreamActive = Provider.of<TrackerProvider>(context, listen: false).isPositionStreamActive;
+        final bool isPositionStreamActive =
+            Provider.of<TrackerProvider>(context, listen: false)
+                .isPositionStreamActive;
         final currentLocationPermission = await Geolocator.checkPermission();
-        if(isPositionStreamActive && currentLocationPermission == LocationPermission.always) {
+        if (isPositionStreamActive &&
+            currentLocationPermission == LocationPermission.always) {
           _startForegroundLocationUpdates();
         }
-
       },
       onResume: () async {
         final currentLocationPermission = await Geolocator.checkPermission();
 
-        if(currentLocationPermission == LocationPermission.denied || currentLocationPermission == LocationPermission.deniedForever) {
-          if(!DashboardScreen.isOverlayEntryAdded && mounted) {
+        if (currentLocationPermission == LocationPermission.denied ||
+            currentLocationPermission == LocationPermission.deniedForever) {
+          if (!DashboardScreen.isOverlayEntryAdded && mounted) {
             _showTopOverlay(context);
           }
-
-        }else {
+        } else {
           DashboardScreen.removeOverlayEntry();
 
-          if(currentLocationPermission != LocationPermission.always && mounted) {
+          if (currentLocationPermission != LocationPermission.always &&
+              mounted) {
             _showTopOverlay(context, permission: LocationPermission.always);
           }
         }
 
-
-        if(DashboardScreen.isOpenSetting) {
+        if (DashboardScreen.isOpenSetting) {
           DashboardScreen.isOpenSetting = false;
 
           _disableBatteryOptimization();
-
-
         }
         stopService();
       },
-
-
     );
 
     _loadData();
 
     _onPermissionHandel();
 
+    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      // if (mounted) {
+      final orderProvider = Provider.of<OrderProvider>(context, listen: false);
 
+      int countBefore = orderProvider.currentOrders.length;
+
+      await orderProvider.getCurrentOrdersList(1, context);
+      await orderProvider.getOrdersCount();
+
+      final currentOrders = orderProvider.currentOrders;
+      log('Current orders: $currentOrders');
+      int countAfter = currentOrders.length;
+
+      if (countAfter > countBefore) {
+        log('New order detected! Count before: $countBefore, Count after: $countAfter');
+        int maxId = 0;
+        OrderModel? latestOrder;
+        for (var order in currentOrders) {
+          if ((order.id ?? 0) > maxId) {
+            maxId = order.id ?? 0;
+            latestOrder = order;
+          }
+        }
+
+        try {
+          _audioPlayer.setReleaseMode(ReleaseMode.loop);
+          _audioPlayer.play(AssetSource('notification.mp3'));
+          if (mounted) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => Dialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20.0),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(Dimensions.paddingSizeLarge),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.notifications_active_outlined,
+                        size: 50,
+                        color: Theme.of(context).primaryColor,
+                      ),
+                      const SizedBox(height: Dimensions.paddingSizeLarge),
+                      Text(
+                        getTranslated('new_order', context) ?? 'New Order',
+                        style: rubikMedium.copyWith(
+                            fontSize: Dimensions.fontSizeLarge),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: Dimensions.paddingSizeSmall),
+                      Text(
+                        getTranslated(
+                                'you_have_a_new_order_in_the_queue', context) ??
+                            'You have a new order in the queue!',
+                        style: rubikRegular.copyWith(
+                          fontSize: Dimensions.fontSizeSmall,
+                          color: Theme.of(context).hintColor,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: Dimensions.paddingSizeLarge),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Theme.of(context).primaryColor,
+                            shape: RoundedRectangleBorder(
+                              borderRadius:
+                                  BorderRadius.circular(Dimensions.radiusSmall),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                vertical: Dimensions.paddingSizeDefault),
+                          ),
+                          onPressed: () {
+                            _audioPlayer.stop();
+                            Navigator.of(ctx).pop();
+                            if (latestOrder != null) {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => OrderDetailsScreen(
+                                    orderModelItem: latestOrder!,
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          child: Text(
+                            getTranslated('view_order', context) ??
+                                'View Order',
+                            style: rubikMedium.copyWith(
+                              color: Colors.white,
+                              fontSize: Dimensions.fontSizeLarge,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint('Audio or dialog error: $e');
+        }
+      }
+      // }
+    });
   }
-
 
   @override
   void dispose() {
+    _pollingTimer?.cancel();
+    _audioPlayer.dispose();
     _listener.dispose();
     super.dispose();
   }
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -127,7 +239,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Scaffold(
         bottomNavigationBar: BottomNavigationBar(
           selectedItemColor: Theme.of(context).primaryColor,
-          unselectedItemColor: Theme.of(context).hintColor.withValues(alpha: 0.7),
+          unselectedItemColor:
+              Theme.of(context).hintColor.withValues(alpha: 0.7),
           backgroundColor: Theme.of(context).cardColor,
           showUnselectedLabels: true,
           currentIndex: _pageIndex,
@@ -155,7 +268,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   BottomNavigationBarItem _barItem(IconData icon, String? label, int index) {
     return BottomNavigationBarItem(
-      icon: Icon(icon, color: index == _pageIndex ? Theme.of(context).primaryColor : Theme.of(context).hintColor.withValues(alpha: 0.7), size: 20),
+      icon: Icon(icon,
+          color: index == _pageIndex
+              ? Theme.of(context).primaryColor
+              : Theme.of(context).hintColor.withValues(alpha: 0.7),
+          size: 20),
       label: label,
     );
   }
@@ -169,98 +286,102 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _onPermissionHandel() async {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-
       final currentLocationPermission = await Geolocator.checkPermission();
 
-      if (currentLocationPermission == LocationPermission.denied || currentLocationPermission == LocationPermission.deniedForever) {
-
+      if (currentLocationPermission == LocationPermission.denied ||
+          currentLocationPermission == LocationPermission.deniedForever) {
         await _checkLocationPermission();
 
-        if(mounted) {
-          _showTopOverlay(context); // Show overlay if permission is denied or denied forever
+        if (mounted) {
+          _showTopOverlay(
+              context); // Show overlay if permission is denied or denied forever
         }
-      }else {
+      } else {
         DashboardScreen.removeOverlayEntry();
 
-        if(currentLocationPermission != LocationPermission.always && mounted) {
+        if (currentLocationPermission != LocationPermission.always && mounted) {
           _showTopOverlay(context, permission: LocationPermission.always);
         }
       }
-
-
-
     });
-
   }
 
-
-  void _showTopOverlay(BuildContext context, {LocationPermission permission = LocationPermission.denied}) {
+  void _showTopOverlay(BuildContext context,
+      {LocationPermission permission = LocationPermission.denied}) {
     OverlayState? overlayState = Overlay.of(context);
 
     // Declare the OverlayEntry variable
 
     // Initialize the OverlayEntry
-    DashboardScreen.overlayEntry = OverlayEntry(builder: (context) => Positioned(
-      top: 0, left: 0, right: 0,
-      child: Material(
-        child: Container(
-          width: MediaQuery.of(context).size.width,
-          color: Theme.of(context).textTheme.bodyLarge?.color,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              vertical: Dimensions.paddingSizeSmall,
-              horizontal: Dimensions.paddingSizeLarge,
+    DashboardScreen.overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: Material(
+          child: Container(
+            width: MediaQuery.of(context).size.width,
+            color: Theme.of(context).textTheme.bodyLarge?.color,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                vertical: Dimensions.paddingSizeSmall,
+                horizontal: Dimensions.paddingSizeLarge,
+              ),
+              child: SafeArea(
+                  top: true,
+                  bottom: false,
+                  child: InkWell(
+                    onTap: () async {
+                      if (permission == LocationPermission.always) {
+                        LocationHelper.onLocationShowDialog(context,
+                            dialog: LocationPermissionWidget(
+                              message:
+                                  '${getTranslated('always_allow_permission_message', context)} \n\n ${getTranslated('to_allow_go_to_settings', context)}',
+                              onPressed: () async {
+                                Navigator.pop(context);
+                                DashboardScreen.isOpenSetting = true;
+                                await Geolocator.openAppSettings();
+                              },
+                            ));
+                      } else {
+                        if (context.mounted) {
+                          await LocationHelper.checkPermission(context);
+                        }
+                      }
+                    },
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Icon(
+                            permission == LocationPermission.always
+                                ? Icons.gps_fixed_rounded
+                                : Icons.location_on_sharp,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: Dimensions.paddingSizeSmall),
+                          Flexible(
+                              child: Text(
+                            getTranslated(
+                                permission == LocationPermission.always
+                                    ? 'Let app run in background in order to get precise location for better performance'
+                                    : 'location_sharing_disabled_top_here_to_enable',
+                                context)!,
+                            style: rubikRegular.copyWith(color: Colors.white),
+                          )),
+                          const SizedBox(width: Dimensions.paddingSizeDefault),
+                          const Icon(Icons.chevron_right, color: Colors.white),
+                        ]),
+                  )),
             ),
-            child: SafeArea(top: true, bottom: false, child: InkWell(
-              onTap: () async {
-                if(permission == LocationPermission.always) {
-                  LocationHelper.onLocationShowDialog(context, dialog: LocationPermissionWidget(
-                    message: '${getTranslated('always_allow_permission_message', context)} \n\n ${getTranslated('to_allow_go_to_settings', context)}',
-                    onPressed: () async {
-                    Navigator.pop(context);
-                    DashboardScreen.isOpenSetting = true;
-                    await Geolocator.openAppSettings();
-                  },
-                  ));
-
-                }else {
-                  if(context.mounted) {
-                    await LocationHelper.checkPermission(context);
-
-                  }
-                }
-              },
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Icon(permission == LocationPermission.always
-                    ? Icons.gps_fixed_rounded
-                    : Icons.location_on_sharp, color:
-                Colors.white,
-                ),
-                const SizedBox(width: Dimensions.paddingSizeSmall),
-
-                Flexible(child: Text(
-                  getTranslated(permission == LocationPermission.always
-                      ? 'Let app run in background in order to get precise location for better performance'
-                      : 'location_sharing_disabled_top_here_to_enable', context)!,
-                  style: rubikRegular.copyWith(color: Colors.white),
-                )),
-                const SizedBox(width: Dimensions.paddingSizeDefault),
-
-                const Icon(Icons.chevron_right, color: Colors.white),
-
-              ]),
-            )),
           ),
         ),
       ),
-    ),
     );
 
     // Insert the overlay into the overlay state
     overlayState.insert(DashboardScreen.overlayEntry);
     DashboardScreen.isOverlayEntryAdded = true; // Set this flag to true
   }
-
 
   Future<void> _checkLocationPermission() async {
     await showDialog(
@@ -279,13 +400,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 style: rubikRegular,
               ),
               const SizedBox(height: Dimensions.paddingSizeDefault),
-
               Text(
                 getTranslated('always_allow_permission_message', context)!,
                 style: rubikRegular,
               ),
               const SizedBox(height: Dimensions.paddingSizeDefault),
-
               Text(
                 getTranslated('privacy_assurance_message', context)!,
                 style: rubikRegular.copyWith(fontStyle: FontStyle.italic),
@@ -301,14 +420,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               },
               child: Text(getTranslated('cancel', context)!),
             ),
-
             TextButton(
               onPressed: () async {
                 Navigator.of(context).pop();
 
                 await LocationHelper.checkPermission(context);
                 _disableBatteryOptimization();
-
               },
               child: Text(getTranslated('allow', context)!),
             ),
@@ -325,7 +442,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'eFood',
         channelName: 'Foreground Service Notification',
-        channelDescription: 'This notification appears when the foreground service is running.',
+        channelDescription:
+            'This notification appears when the foreground service is running.',
         onlyAlertOnce: false,
       ),
       iosNotificationOptions: const IOSNotificationOptions(
@@ -344,40 +462,55 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Start the foreground service
     await FlutterForegroundTask.startService(
       notificationTitle: getTranslated('location_tracking', context)!,
-      notificationText: getTranslated('tracking_your_location_on_background', context)!,
+      notificationText:
+          getTranslated('tracking_your_location_on_background', context)!,
       // callback: Provider.of<TrackerProvider>(context, listen: false).startListening,
     );
   }
 
-
   Future<void> _loadData() async {
-    Provider.of<OrderProvider>(context, listen: false).getCurrentOrdersList(1, context);
+    Provider.of<OrderProvider>(context, listen: false)
+        .getCurrentOrdersList(1, context);
     Provider.of<ProfileProvider>(context, listen: false).getUserInfo(context);
-    Provider.of<OrderProvider>(context, listen: false).getDeliveryOrderStatistics(isUpdate: false);
-    Provider.of<OrderProvider>(context, listen: false).setDeliveryAnalyticsTimeRangeEnum(isReload: true, isUpdate: false);
-    Provider.of<OrderProvider>(context, listen: false).setSelectedSectionID(isReload: true, isUpdate: false);
-    Provider.of<OrderProvider>(context, listen: false).getOrderHistoryList(1, context, isUpdate: false, isReload: true);
+    Provider.of<OrderProvider>(context, listen: false)
+        .getDeliveryOrderStatistics(isUpdate: false);
+    Provider.of<OrderProvider>(context, listen: false)
+        .setDeliveryAnalyticsTimeRangeEnum(isReload: true, isUpdate: false);
+    Provider.of<OrderProvider>(context, listen: false)
+        .setSelectedSectionID(isReload: true, isUpdate: false);
+    Provider.of<OrderProvider>(context, listen: false)
+        .getOrderHistoryList(1, context, isUpdate: false, isReload: true);
 
-
-    Provider.of<OrderProvider>(Get.context!, listen: false).getOrdersCount().then((orderCount) async {
+    Provider.of<OrderProvider>(Get.context!, listen: false)
+        .getOrdersCount()
+        .then((orderCount) async {
       final currentLocationPermission = await Geolocator.checkPermission();
 
-
-      if ((orderCount?.outForDelivery ?? 0) > 0 && (currentLocationPermission != LocationPermission.denied && currentLocationPermission != LocationPermission.deniedForever)) {
-        Provider.of<TrackerProvider>(Get.context!, listen: false).startListenCurrentLocation();
-      } else if (orderCount != null && orderCount.outForDelivery != null && orderCount.outForDelivery! < 1) {
-        Provider.of<TrackerProvider>(Get.context!, listen: false).stopLocationService();
+      if ((orderCount?.outForDelivery ?? 0) > 0 &&
+          (currentLocationPermission != LocationPermission.denied &&
+              currentLocationPermission != LocationPermission.deniedForever)) {
+        Provider.of<TrackerProvider>(Get.context!, listen: false)
+            .startListenCurrentLocation();
+      } else if (orderCount != null &&
+          orderCount.outForDelivery != null &&
+          orderCount.outForDelivery! < 1) {
+        Provider.of<TrackerProvider>(Get.context!, listen: false)
+            .stopLocationService();
       }
     });
-
   }
 
   Future _disableBatteryOptimization() async {
-    bool isDisabled = await DisableBatteryOptimization.isBatteryOptimizationDisabled ?? false;
-    bool isAlwaysAllowLocation = await Geolocator.checkPermission() == LocationPermission.always;
-    final NotificationSettings settings = await FirebaseMessaging.instance.getNotificationSettings();
+    bool isDisabled =
+        await DisableBatteryOptimization.isBatteryOptimizationDisabled ?? false;
+    bool isAlwaysAllowLocation =
+        await Geolocator.checkPermission() == LocationPermission.always;
+    final NotificationSettings settings =
+        await FirebaseMessaging.instance.getNotificationSettings();
 
-    if (!isDisabled && (isAlwaysAllowLocation || settings.authorizationStatus == AuthorizationStatus.authorized)) {
+    if (!isDisabled &&
+        (isAlwaysAllowLocation ||
+            settings.authorizationStatus == AuthorizationStatus.authorized)) {
       DisableBatteryOptimization.showDisableBatteryOptimizationSettings();
     }
   }
